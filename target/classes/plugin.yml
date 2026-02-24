@@ -1,0 +1,6 @@
+name: BanBridge
+main: org.banbridge.BanBridgePlugin
+version: 1.0.0
+api: ["1.0.0"]
+author: you
+description: Server-wide bans + stats bridge to REST backend

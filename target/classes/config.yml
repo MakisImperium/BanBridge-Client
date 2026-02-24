@@ -1,0 +1,23 @@
+
+  api:
+    baseUrl: "http://127.0.0.1:8090"
+    serverKey: "survival-1"
+    serverToken: "<SERVER_TOKEN_PLACEHOLDER>"
+
+  sync:
+    bansPollSeconds: 10
+    statsFlushSeconds: 60
+    metricsSeconds: 15
+
+    presenceSeconds: 10
+    commandsPollSeconds: 3
+
+    httpMaxAttempts: 4
+    httpBaseBackoffMillis: 250
+    httpMaxBackoffMillis: 5000
+
+  cache:
+    bansFile: "bans-cache.json"
+
+  web:
+    enabled: false

@@ -1,0 +1,15 @@
+C:\Users\marce\MakisImperium\BanBridgeProjekt\Client\src\main\java\org\banbridge\api\BackendClient.java
+C:\Users\marce\MakisImperium\BanBridgeProjekt\Client\src\main\java\org\banbridge\api\BanChangesResponse.java
+C:\Users\marce\MakisImperium\BanBridgeProjekt\Client\src\main\java\org\banbridge\api\BanReportRequest.java
+C:\Users\marce\MakisImperium\BanBridgeProjekt\Client\src\main\java\org\banbridge\api\CommandAckRequest.java
+C:\Users\marce\MakisImperium\BanBridgeProjekt\Client\src\main\java\org\banbridge\api\CommandsPollResponse.java
+C:\Users\marce\MakisImperium\BanBridgeProjekt\Client\src\main\java\org\banbridge\api\PresenceRequest.java
+C:\Users\marce\MakisImperium\BanBridgeProjekt\Client\src\main\java\org\banbridge\api\ServerMetricsRequest.java
+C:\Users\marce\MakisImperium\BanBridgeProjekt\Client\src\main\java\org\banbridge\api\StatsBatchRequest.java
+C:\Users\marce\MakisImperium\BanBridgeProjekt\Client\src\main\java\org\banbridge\BanBridgePlugin.java
+C:\Users\marce\MakisImperium\BanBridgeProjekt\Client\src\main\java\org\banbridge\bans\BanCache.java
+C:\Users\marce\MakisImperium\BanBridgeProjekt\Client\src\main\java\org\banbridge\bans\BanEntry.java
+C:\Users\marce\MakisImperium\BanBridgeProjekt\Client\src\main\java\org\banbridge\stats\BandwidthMeter.java
+C:\Users\marce\MakisImperium\BanBridgeProjekt\Client\src\main\java\org\banbridge\stats\LinuxBandwidthMeter.java
+C:\Users\marce\MakisImperium\BanBridgeProjekt\Client\src\main\java\org\banbridge\stats\OshiBandwidthMeter.java
+C:\Users\marce\MakisImperium\BanBridgeProjekt\Client\src\main\java\org\banbridge\stats\StatsAccumulator.java

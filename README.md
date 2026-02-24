@@ -6,6 +6,7 @@
 [![NukkitX](https://img.shields.io/badge/NukkitX-1.0-E74C3C?logo=minecraft&logoColor=white)](https://nukkitx.com/)
 [![Maven](https://img.shields.io/badge/Maven-3.8+-C71A36?logo=apachemaven&logoColor=white)](https://maven.apache.org/)
 [![License](https://img.shields.io/badge/License-Proprietary-FF6B6B)](LICENSE)
+[![Backend]([https://img.shields.io/badge/License-Proprietary-FF6B6B](https://github.com/MakisImperium/BanBridge-Client))](Backend)
 
 ## ⚠️ CRITICAL: Backend Dependency
 

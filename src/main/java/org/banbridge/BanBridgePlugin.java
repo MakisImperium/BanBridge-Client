@@ -12,6 +12,8 @@ import cn.nukkit.event.player.PlayerLoginEvent;
 import cn.nukkit.event.player.PlayerQuitEvent;
 import cn.nukkit.event.server.ServerCommandEvent;
 import cn.nukkit.plugin.PluginBase;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.banbridge.api.BackendClient;
 import org.banbridge.api.BanReportRequest;
 import org.banbridge.api.CommandsPollResponse;
@@ -32,6 +34,8 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -66,11 +70,14 @@ public final class BanBridgePlugin extends PluginBase implements Listener {
 
     private final AtomicBoolean shuttingDown = new AtomicBoolean(false);
     private final AtomicBoolean warnedMissingServerKey = new AtomicBoolean(false);
+    private final AtomicBoolean commandsProcessing = new AtomicBoolean(false);
 
     /**
      * Commands cursor: only advance after successful ACK to avoid losing commands.
      */
     private final AtomicLong commandsSinceId = new AtomicLong(0);
+
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     // ----------------------------
     // Lifecycle
@@ -80,7 +87,6 @@ public final class BanBridgePlugin extends PluginBase implements Listener {
     public void onEnable() {
         saveDefaultConfig();
 
-        // ---- config
         String baseUrl = getConfig().getString("api.baseUrl");
         this.serverKey = getConfig().getString("api.serverKey");
         String serverToken = getConfig().getString("api.serverToken");
@@ -89,7 +95,6 @@ public final class BanBridgePlugin extends PluginBase implements Listener {
         int statsFlushSeconds = Math.max(10, getConfig().getInt("sync.statsFlushSeconds", 60));
         int metricsSeconds = Math.max(5, getConfig().getInt("sync.metricsSeconds", 15));
 
-        // Presence heartbeat: protocol says 10-30 seconds. Default 15.
         int presenceSecondsCfg = getConfig().getInt("sync.presenceSeconds", 15);
         int presenceSeconds = clampInt(presenceSecondsCfg, 10, 30);
 
@@ -102,7 +107,6 @@ public final class BanBridgePlugin extends PluginBase implements Listener {
         String bansFileName = getConfig().getString("cache.bansFile", "bans-cache.json");
         this.banCachePath = getDataFolder().toPath().resolve(bansFileName);
 
-        // ---- backend client
         this.backendClient = new BackendClient(
                 baseUrl,
                 serverKey,
@@ -113,15 +117,12 @@ public final class BanBridgePlugin extends PluginBase implements Listener {
                 httpMaxBackoffMillis
         );
 
-        // ---- local stores
         this.banCache = new BanCache(banCachePath, getLogger());
         this.stats = new StatsAccumulator(getLogger());
         banCache.loadFromDisk();
 
-        // ---- events
         getServer().getPluginManager().registerEvents(this, this);
 
-        // ---- bandwidth meter
         this.bandwidthMeter = createBandwidthMeter();
         if (bandwidthMeter == null) {
             logInfo("Metrics", "Bandwidth meter disabled. " + INFO + "rxKbps/txKbps will be " + ACCENT + "null" + INFO + ".");
@@ -129,13 +130,11 @@ public final class BanBridgePlugin extends PluginBase implements Listener {
             logOk("Metrics", "Bandwidth meter enabled: " + ACCENT + bandwidthMeter.getClass().getSimpleName());
         }
 
-        // ---- helpful config warning
         if (baseUrl != null && (baseUrl.contains("127.0.0.1") || baseUrl.contains("localhost"))) {
-            logWarn("Config", "api.baseUrl points to localhost " + DIM + "(" + baseUrl + ")" + WARN + ". " +
-                    INFO + "If backend is on another machine, set it to " + ACCENT + "http://<BACKEND_HOST>:<PORT>");
+            logWarn("Config", "api.baseUrl points to localhost " + DIM + "(" + baseUrl + ")" + WARN + ". "
+                    + INFO + "If the backend runs on another machine, set it to " + ACCENT + "http://<BACKEND_HOST>:<PORT>");
         }
 
-        // ---- health check
         backendClient.healthCheckAsync(resOpt -> {
             if (resOpt.isEmpty()) {
                 logErr("Backend", "Health check " + ERR + "FAILED" + INFO + ". baseUrl=" + ACCENT + safeInline(baseUrl));
@@ -148,11 +147,7 @@ public final class BanBridgePlugin extends PluginBase implements Listener {
                     + OK + " db=" + db);
         });
 
-        // ----------------------------
-        // Scheduled tasks
-        // ----------------------------
-
-        // 1) Ban changes poll (+ debug newly banned)
+        // 1) Ban changes poll
         getServer().getScheduler().scheduleRepeatingTask(this, () -> {
             if (shuttingDown.get()) return;
 
@@ -172,32 +167,32 @@ public final class BanBridgePlugin extends PluginBase implements Listener {
                         Player online = (b.xuid() == null) ? null : findOnlineByXuid(b.xuid());
                         if (online != null) playerName = online.getName();
 
-                        logWarn("BanSync", "NEW BAN " + DIM + "→ " + WARN +
-                                "banId=" + ACCENT + b.banId() + WARN +
-                                ", xuid=" + ACCENT + b.xuid() + WARN +
-                                ", playerName=" + ACCENT + (playerName == null ? "n/a" : playerName) + WARN +
-                                ", reason=" + ACCENT + safeInline(b.reason()) + WARN +
-                                ", createdAt=" + ACCENT + b.createdAt() + WARN +
-                                ", expiresAt=" + ACCENT + b.expiresAt() + WARN +
-                                ", revokedAt=" + ACCENT + b.revokedAt() + WARN +
-                                ", updatedAt=" + ACCENT + b.updatedAt());
+                        logWarn("BanSync", "NEW BAN " + DIM + "→ " + WARN
+                                + "banId=" + ACCENT + b.banId() + WARN
+                                + ", xuid=" + ACCENT + b.xuid() + WARN
+                                + ", playerName=" + ACCENT + (playerName == null ? "n/a" : playerName) + WARN
+                                + ", reason=" + ACCENT + safeInline(b.reason()) + WARN
+                                + ", createdAt=" + ACCENT + b.createdAt() + WARN
+                                + ", expiresAt=" + ACCENT + b.expiresAt() + WARN
+                                + ", revokedAt=" + ACCENT + b.revokedAt() + WARN
+                                + ", updatedAt=" + ACCENT + b.updatedAt());
                     }
                 }
 
-                // kick newly banned players if online
-                for (BanEntry newlyBanned : apply.newlyBanned()) {
-                    if (newlyBanned == null || newlyBanned.xuid() == null) continue;
-                    Player p = findOnlineByXuid(newlyBanned.xuid());
-                    if (p != null) {
-                        getServer().getScheduler().scheduleTask(this, () ->
-                                p.kick(banCache.buildKickMessage(newlyBanned), false)
-                        );
+                if (apply.newlyBanned() != null) {
+                    for (BanEntry newlyBanned : apply.newlyBanned()) {
+                        if (newlyBanned == null || newlyBanned.xuid() == null) continue;
+                        Player p = findOnlineByXuid(newlyBanned.xuid());
+                        if (p != null) {
+                            String kickMessage = banCache.buildKickMessage(newlyBanned);
+                            getServer().getScheduler().scheduleTask(this, () -> kickPlayer(p, kickMessage));
+                        }
                     }
                 }
             });
         }, bansPollSeconds * 20, true);
 
-        // 2) Presence push (SNAPSHOT MODE: always send full online list, even if empty)
+        // 2) Presence push
         getServer().getScheduler().scheduleRepeatingTask(this, () -> {
             if (shuttingDown.get()) return;
 
@@ -215,15 +210,22 @@ public final class BanBridgePlugin extends PluginBase implements Listener {
                 ));
             }
 
-            backendClient.postPresenceAsync(new PresenceRequest(true, players), ok -> {
+            PresenceRequest presence = new PresenceRequest(
+                    normalizedServerKey(),
+                    true,
+                    players
+            );
+
+            backendClient.postPresenceAsync(presence, ok -> {
                 if (!ok) {
-                    logWarn("Presence", "POST /api/server/presence failed " + DIM + "→ " + WARN +
-                            "snapshot=true players=" + ACCENT + players.size());
+                    logWarn("Presence", "POST /api/server/presence failed " + DIM + "→ " + WARN
+                            + "serverKey=" + ACCENT + safeInline(normalizedServerKey()) + WARN
+                            + ", snapshot=true players=" + ACCENT + players.size());
                 }
             });
         }, presenceSeconds * 20, true);
 
-        // 3) Playtime tick (1 min)
+        // 3) Playtime tick
         getServer().getScheduler().scheduleRepeatingTask(this, () -> {
             if (shuttingDown.get()) return;
 
@@ -250,15 +252,15 @@ public final class BanBridgePlugin extends PluginBase implements Listener {
             });
         }, statsFlushSeconds * 20, true);
 
-        // 5) Metrics push (MUST be periodic even if playersOnline=0)
+        // 5) Metrics push
         getServer().getScheduler().scheduleRepeatingTask(this, () -> {
             if (shuttingDown.get()) return;
 
-            String sk = (serverKey == null) ? "" : serverKey.trim();
+            String sk = normalizedServerKey();
             if (sk.isEmpty()) {
                 if (warnedMissingServerKey.compareAndSet(false, true)) {
-                    logErr("Metrics", "Disabled: " + ERR + "api.serverKey is missing/empty" + INFO +
-                            " (must be set and unique per instance).");
+                    logErr("Metrics", "Disabled: " + ERR + "api.serverKey is missing/empty" + INFO
+                            + " (must be set and unique per instance).");
                 }
                 return;
             }
@@ -266,67 +268,66 @@ public final class BanBridgePlugin extends PluginBase implements Listener {
             ServerMetricsRequest metrics = collectMetrics();
             backendClient.postMetricsAsync(metrics, result -> {
                 if (result != null && result.ok()) {
-                    logOk("Metrics", "POST /api/server/metrics ok " + DIM + "→ " + OK +
-                            "serverKey=" + ACCENT + metrics.serverKey() + OK +
-                            ", playersOnline=" + ACCENT + metrics.playersOnline() + OK +
-                            ", tps=" + ACCENT + fmt(metrics.tps()) + OK +
-                            ", rxKbps=" + ACCENT + fmt(metrics.rxKbps()) + OK +
-                            ", txKbps=" + ACCENT + fmt(metrics.txKbps()));
-                } else {
-                    String sc = (result == null || result.statusCode() == null) ? "n/a" : result.statusCode().toString();
-                    logWarn("Metrics", "POST /api/server/metrics failed " + DIM + "→ " + WARN +
-                            "status=" + ACCENT + sc + WARN +
-                            ", serverKey=" + ACCENT + metrics.serverKey());
+                    return;
                 }
+
+                String sc = (result == null || result.statusCode() == null) ? "n/a" : result.statusCode().toString();
+                logWarn("Metrics", "POST /api/server/metrics failed " + DIM + "→ " + WARN
+                        + "status=" + ACCENT + sc + WARN
+                        + ", serverKey=" + ACCENT + metrics.serverKey());
             });
         }, metricsSeconds * 20, true);
 
         // 6) Commands poll
         getServer().getScheduler().scheduleRepeatingTask(this, () -> {
             if (shuttingDown.get()) return;
+            if (!commandsProcessing.compareAndSet(false, true)) return;
 
             String sinceId = Long.toString(commandsSinceId.get());
             backendClient.pollCommandsAsync(sinceId, resOpt -> {
-                if (resOpt.isEmpty()) return;
+                if (resOpt.isEmpty()) {
+                    commandsProcessing.set(false);
+                    return;
+                }
 
                 CommandsPollResponse res = resOpt.get();
-                if (res.commands() == null || res.commands().isEmpty()) return;
-
-                for (CommandsPollResponse.ServerCommand cmd : res.commands()) {
-                    if (cmd == null) continue;
-
-                    long id = cmd.id();
-                    if (id <= commandsSinceId.get()) continue;
-
-                    String type = (cmd.cmdType() == null) ? "" : cmd.cmdType().trim().toUpperCase(Locale.ROOT);
-                    boolean executed = executeBackendCommand(type, cmd.payloadJson());
-                    if (!executed) continue;
-
-                    backendClient.ackCommandAsync(id, ok -> {
-                        if (ok) {
-                            commandsSinceId.updateAndGet(prev -> Math.max(prev, id));
-                        } else {
-                            logWarn("Commands", "ACK failed " + DIM + "→ " + WARN + "id=" + ACCENT + id +
-                                    WARN + " (" + INFO + "will retry next poll" + WARN + ")");
-                        }
-                    });
+                List<CommandsPollResponse.ServerCommand> incoming = res.commands();
+                if (incoming == null || incoming.isEmpty()) {
+                    commandsProcessing.set(false);
+                    return;
                 }
+
+                List<CommandsPollResponse.ServerCommand> commands = incoming.stream()
+                        .filter(cmd -> cmd != null && cmd.id() > commandsSinceId.get())
+                        .sorted(Comparator.comparingLong(CommandsPollResponse.ServerCommand::id))
+                        .toList();
+
+                if (commands.isEmpty()) {
+                    commandsProcessing.set(false);
+                    return;
+                }
+
+                getServer().getScheduler().scheduleTask(this, () ->
+                        processPolledCommandsSequentially(commands, 0)
+                );
             });
         }, commandsPollSeconds * 20, true);
 
-        logOk("Startup", "Enabled. backend=" + ACCENT + safeInline(baseUrl) + OK +
-                " serverKey=" + ACCENT + safeInline(serverKey));
+        logOk("Startup", "Enabled. backend=" + ACCENT + safeInline(baseUrl) + OK
+                + " serverKey=" + ACCENT + safeInline(serverKey));
     }
 
     @Override
     public void onDisable() {
         shuttingDown.set(true);
 
-        // Best-effort: send an empty snapshot so backend can mark everyone offline immediately.
-        // (Backend must interpret snapshot=true as authoritative.)
         try {
             if (backendClient != null) {
-                backendClient.postPresenceAsync(new PresenceRequest(true, java.util.List.of()), __ -> {
+                backendClient.postPresenceAsync(new PresenceRequest(
+                        normalizedServerKey(),
+                        true,
+                        List.of()
+                ), __ -> {
                     // no logs during shutdown
                 });
             }
@@ -344,7 +345,7 @@ public final class BanBridgePlugin extends PluginBase implements Listener {
     }
 
     // ----------------------------
-    // Commands: disable /ban (website-only banning)
+    // Commands: disable /ban
     // ----------------------------
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
@@ -360,12 +361,12 @@ public final class BanBridgePlugin extends PluginBase implements Listener {
             event.setCancelled(true);
 
             event.getPlayer().sendMessage(
-                    PREFIX + ERR + "Bannen ist deaktiviert. " + INFO + "Bitte nutze die " + ACCENT + "Website" + INFO + "."
+                    PREFIX + ERR + "Banning is disabled. " + INFO + "Please use the " + ACCENT + "website" + INFO + "."
             );
 
-            logWarn("Commands", "Blocked /ban " + DIM + "→ " + WARN +
-                    "player=" + ACCENT + event.getPlayer().getName() + WARN +
-                    ", cmd=" + ACCENT + safeInline(trimmed));
+            logWarn("Commands", "Blocked /ban " + DIM + "→ " + WARN
+                    + "player=" + ACCENT + event.getPlayer().getName() + WARN
+                    + ", cmd=" + ACCENT + safeInline(trimmed));
         }
     }
 
@@ -382,9 +383,9 @@ public final class BanBridgePlugin extends PluginBase implements Listener {
             event.setCancelled(true);
 
             String sender = (event.getSender() instanceof ConsoleCommandSender) ? "CONSOLE" : event.getSender().getName();
-            logWarn("Commands", "Blocked console ban " + DIM + "→ " + WARN +
-                    "sender=" + ACCENT + sender + WARN +
-                    ", cmd=" + ACCENT + safeInline(trimmed));
+            logWarn("Commands", "Blocked console ban " + DIM + "→ " + WARN
+                    + "sender=" + ACCENT + sender + WARN
+                    + ", cmd=" + ACCENT + safeInline(trimmed));
         }
     }
 
@@ -403,10 +404,10 @@ public final class BanBridgePlugin extends PluginBase implements Listener {
             event.setKickMessage(banCache.buildKickMessage(ban.get()));
             event.setCancelled(true);
 
-            logWarn("Ban", "Login blocked " + DIM + "→ " + WARN +
-                    "player=" + ACCENT + p.getName() + WARN +
-                    ", xuid=" + ACCENT + xuid + WARN +
-                    ", banId=" + ACCENT + ban.get().banId());
+            logWarn("Ban", "Login blocked " + DIM + "→ " + WARN
+                    + "player=" + ACCENT + p.getName() + WARN
+                    + ", xuid=" + ACCENT + xuid + WARN
+                    + ", banId=" + ACCENT + ban.get().banId());
         }
     }
 
@@ -455,27 +456,247 @@ public final class BanBridgePlugin extends PluginBase implements Listener {
     // Backend commands execution
     // ----------------------------
 
-    private boolean executeBackendCommand(String type, String payloadJson) {
+    private void processPolledCommandsSequentially(List<CommandsPollResponse.ServerCommand> commands, int index) {
+        if (shuttingDown.get()) {
+            commandsProcessing.set(false);
+            return;
+        }
+
+        if (commands == null || index >= commands.size()) {
+            commandsProcessing.set(false);
+            return;
+        }
+
+        CommandsPollResponse.ServerCommand cmd = commands.get(index);
+        if (cmd == null) {
+            processPolledCommandsSequentially(commands, index + 1);
+            return;
+        }
+
+        long id = cmd.id();
+        String type = normalizeCommandType(cmd.cmdType());
+
+        logInfo("Commands", "Received command " + DIM + "→ " + INFO
+                + "id=" + ACCENT + id + INFO
+                + ", type=" + ACCENT + safeInline(type)
+                + INFO + ", createdAt=" + ACCENT + safeInline(cmd.createdAt()));
+
+        CommandExecutionOutcome outcome = executeBackendCommand(cmd);
+
+        if (!outcome.acknowledge()) {
+            logWarn("Commands", "Command not acknowledged " + DIM + "→ " + WARN
+                    + "id=" + ACCENT + id + WARN
+                    + ", type=" + ACCENT + safeInline(type) + WARN
+                    + ", reason=" + ACCENT + safeInline(outcome.logMessage()));
+            commandsProcessing.set(false);
+            return;
+        }
+
+        backendClient.ackCommandAsync(id, ok -> {
+            if (!ok) {
+                logWarn("Commands", "ACK failed " + DIM + "→ " + WARN
+                        + "id=" + ACCENT + id + WARN
+                        + ", type=" + ACCENT + safeInline(type) + WARN
+                        + " (" + INFO + "will retry next poll" + WARN + ")");
+                commandsProcessing.set(false);
+                return;
+            }
+
+            commandsSinceId.updateAndGet(prev -> Math.max(prev, id));
+
+            logOk("Commands", "ACK successful " + DIM + "→ " + OK
+                    + "id=" + ACCENT + id + OK
+                    + ", type=" + ACCENT + safeInline(type));
+
+            if (outcome.shutdownAfterAck()) {
+                logWarn("Commands", "Executing shutdown after ACK " + DIM + "→ " + WARN
+                        + "id=" + ACCENT + id);
+                getServer().getScheduler().scheduleTask(this, () -> getServer().shutdown());
+                commandsProcessing.set(false);
+                return;
+            }
+
+            getServer().getScheduler().scheduleTask(this, () ->
+                    processPolledCommandsSequentially(commands, index + 1)
+            );
+        });
+    }
+
+    private CommandExecutionOutcome executeBackendCommand(CommandsPollResponse.ServerCommand cmd) {
+        if (cmd == null) {
+            return CommandExecutionOutcome.ack("command was null");
+        }
+
+        String type = normalizeCommandType(cmd.cmdType());
+        long id = cmd.id();
+
         try {
             return switch (type) {
                 case "SHUTDOWN" -> {
-                    logWarn("Commands", "Backend command " + DIM + "→ " + WARN + "SHUTDOWN");
-                    getServer().shutdown();
-                    yield true;
+                    logWarn("Commands", "Executing command " + DIM + "→ " + WARN
+                            + "id=" + ACCENT + id + WARN
+                            + ", type=" + ACCENT + "SHUTDOWN");
+                    yield CommandExecutionOutcome.ackShutdown("shutdown scheduled after ACK");
                 }
+
                 case "REFRESH_BANS" -> {
-                    logInfo("Commands", "Backend command " + DIM + "→ " + INFO + "REFRESH_BANS");
                     resetBanCacheToEpoch();
-                    yield true;
+                    logOk("Commands", "Executed command " + DIM + "→ " + OK
+                            + "id=" + ACCENT + id + OK
+                            + ", type=" + ACCENT + "REFRESH_BANS");
+                    yield CommandExecutionOutcome.ack("ban cache reset");
                 }
+
+                case "KICK" -> executeKickCommand(id, cmd.payloadJson());
+                case "MESSAGE" -> executeMessageCommand(id, cmd.payloadJson());
+                case "BROADCAST" -> executeBroadcastCommand(id, cmd.payloadJson());
+
                 default -> {
-                    logWarn("Commands", "Unknown command " + DIM + "→ " + WARN + safeInline(type));
-                    yield false;
+                    logWarn("Commands", "Unknown command type " + DIM + "→ " + WARN
+                            + "id=" + ACCENT + id + WARN
+                            + ", type=" + ACCENT + safeInline(type) + WARN
+                            + ", payload=" + ACCENT + clipPayload(cmd.payloadJson()));
+                    yield CommandExecutionOutcome.ack("unknown command type ignored");
                 }
             };
         } catch (Throwable t) {
-            logErr("Commands", "Execution error: " + safeInline(t.getMessage()));
-            return false;
+            logErr("Commands", "Execution error " + DIM + "→ " + ERR
+                    + "id=" + ACCENT + id + ERR
+                    + ", type=" + ACCENT + safeInline(type) + ERR
+                    + ", err=" + ACCENT + safeInline(t.getClass().getSimpleName() + ": " + t.getMessage()));
+            return CommandExecutionOutcome.ack("execution error handled");
+        }
+    }
+
+    private CommandExecutionOutcome executeKickCommand(long id, String payloadJson) {
+        JsonNode payload = parsePayloadObject("KICK", id, payloadJson);
+        if (payload == null) {
+            return CommandExecutionOutcome.ack("invalid KICK payload");
+        }
+
+        String xuid = readTrimmedText(payload, "xuid");
+        String reason = readTrimmedText(payload, "reason");
+
+        if (xuid == null) {
+            logWarn("Commands", "KICK ignored due to missing xuid " + DIM + "→ " + WARN
+                    + "id=" + ACCENT + id + WARN
+                    + ", payload=" + ACCENT + clipPayload(payloadJson));
+            return CommandExecutionOutcome.ack("missing xuid");
+        }
+
+        Player target = findOnlineByXuid(xuid);
+        if (target == null) {
+            logWarn("Commands", "KICK target not online " + DIM + "→ " + WARN
+                    + "id=" + ACCENT + id + WARN
+                    + ", xuid=" + ACCENT + xuid);
+            return CommandExecutionOutcome.ack("player not online");
+        }
+
+        String finalReason = (reason == null) ? "You were kicked by the backend." : reason;
+        kickPlayer(target, finalReason);
+
+        logOk("Commands", "KICK executed " + DIM + "→ " + OK
+                + "id=" + ACCENT + id + OK
+                + ", player=" + ACCENT + target.getName() + OK
+                + ", xuid=" + ACCENT + xuid + OK
+                + ", reason=" + ACCENT + safeInline(finalReason));
+
+        return CommandExecutionOutcome.ack("kick executed");
+    }
+
+    private CommandExecutionOutcome executeMessageCommand(long id, String payloadJson) {
+        JsonNode payload = parsePayloadObject("MESSAGE", id, payloadJson);
+        if (payload == null) {
+            return CommandExecutionOutcome.ack("invalid MESSAGE payload");
+        }
+
+        String xuid = readTrimmedText(payload, "xuid");
+        String message = readTrimmedText(payload, "message");
+
+        if (xuid == null) {
+            logWarn("Commands", "MESSAGE ignored due to missing xuid " + DIM + "→ " + WARN
+                    + "id=" + ACCENT + id + WARN
+                    + ", payload=" + ACCENT + clipPayload(payloadJson));
+            return CommandExecutionOutcome.ack("missing xuid");
+        }
+
+        if (message == null) {
+            logWarn("Commands", "MESSAGE ignored due to missing message " + DIM + "→ " + WARN
+                    + "id=" + ACCENT + id + WARN
+                    + ", xuid=" + ACCENT + xuid + WARN
+                    + ", payload=" + ACCENT + clipPayload(payloadJson));
+            return CommandExecutionOutcome.ack("missing message");
+        }
+
+        Player target = findOnlineByXuid(xuid);
+        if (target == null) {
+            logWarn("Commands", "MESSAGE target not online " + DIM + "→ " + WARN
+                    + "id=" + ACCENT + id + WARN
+                    + ", xuid=" + ACCENT + xuid);
+            return CommandExecutionOutcome.ack("player not online");
+        }
+
+        sendMessageToPlayer(target, message);
+
+        logOk("Commands", "MESSAGE executed " + DIM + "→ " + OK
+                + "id=" + ACCENT + id + OK
+                + ", player=" + ACCENT + target.getName() + OK
+                + ", xuid=" + ACCENT + xuid + OK
+                + ", message=" + ACCENT + safeInline(message));
+
+        return CommandExecutionOutcome.ack("message executed");
+    }
+
+    private CommandExecutionOutcome executeBroadcastCommand(long id, String payloadJson) {
+        JsonNode payload = parsePayloadObject("BROADCAST", id, payloadJson);
+        if (payload == null) {
+            return CommandExecutionOutcome.ack("invalid BROADCAST payload");
+        }
+
+        String message = readTrimmedText(payload, "message");
+        if (message == null) {
+            logWarn("Commands", "BROADCAST ignored due to missing message " + DIM + "→ " + WARN
+                    + "id=" + ACCENT + id + WARN
+                    + ", payload=" + ACCENT + clipPayload(payloadJson));
+            return CommandExecutionOutcome.ack("missing message");
+        }
+
+        int recipients = broadcastToAllPlayers(message);
+
+        logOk("Commands", "BROADCAST executed " + DIM + "→ " + OK
+                + "id=" + ACCENT + id + OK
+                + ", recipients=" + ACCENT + recipients + OK
+                + ", message=" + ACCENT + safeInline(message));
+
+        return CommandExecutionOutcome.ack("broadcast executed");
+    }
+
+    private JsonNode parsePayloadObject(String type, long id, String payloadJson) {
+        try {
+            if (payloadJson == null || payloadJson.trim().isEmpty()) {
+                logWarn("Commands", "Empty payload_json " + DIM + "→ " + WARN
+                        + "id=" + ACCENT + id + WARN
+                        + ", type=" + ACCENT + type);
+                return null;
+            }
+
+            JsonNode node = objectMapper.readTree(payloadJson);
+            if (node == null || !node.isObject()) {
+                logWarn("Commands", "payload_json is not an object " + DIM + "→ " + WARN
+                        + "id=" + ACCENT + id + WARN
+                        + ", type=" + ACCENT + type + WARN
+                        + ", payload=" + ACCENT + clipPayload(payloadJson));
+                return null;
+            }
+
+            return node;
+        } catch (Throwable t) {
+            logWarn("Commands", "Failed to parse payload_json " + DIM + "→ " + WARN
+                    + "id=" + ACCENT + id + WARN
+                    + ", type=" + ACCENT + type + WARN
+                    + ", err=" + ACCENT + safeInline(t.getClass().getSimpleName() + ": " + t.getMessage()) + WARN
+                    + ", payload=" + ACCENT + clipPayload(payloadJson));
+            return null;
         }
     }
 
@@ -499,7 +720,7 @@ public final class BanBridgePlugin extends PluginBase implements Listener {
     // ----------------------------
 
     private ServerMetricsRequest collectMetrics() {
-        String sk = (serverKey == null) ? "" : serverKey.trim();
+        String sk = normalizedServerKey();
 
         Runtime rt = Runtime.getRuntime();
         long usedBytes = rt.totalMemory() - rt.freeMemory();
@@ -570,8 +791,12 @@ public final class BanBridgePlugin extends PluginBase implements Listener {
     }
 
     // ----------------------------
-    // Helpers: sanitization
+    // Helpers
     // ----------------------------
+
+    private String normalizedServerKey() {
+        return serverKey == null ? "" : serverKey.trim();
+    }
 
     private static Integer toNonNegativeIntMb(long bytes) {
         if (bytes < 0) return null;
@@ -606,12 +831,8 @@ public final class BanBridgePlugin extends PluginBase implements Listener {
         if (Double.isNaN(v) || Double.isInfinite(v)) return null;
         if (v < 0.0) return null;
 
-        double clamped = Math.min(v, 100_000_000.0); // 100 Gbit/s in kbit/s
-        return Math.round(clamped * 100.0) / 100.0;  // 2 decimals
-    }
-
-    private static String fmt(Double v) {
-        return (v == null) ? "null" : String.format(Locale.ROOT, "%.2f", v);
+        double clamped = Math.min(v, 100_000_000.0);
+        return Math.round(clamped * 100.0) / 100.0;
     }
 
     private static boolean isLinux() {
@@ -629,9 +850,31 @@ public final class BanBridgePlugin extends PluginBase implements Listener {
         return t.isEmpty() ? "n/a" : t;
     }
 
-    // ----------------------------
-    // Helpers: player lookups / reflection-safe extraction
-    // ----------------------------
+    private static String normalizeCommandType(String type) {
+        if (type == null) return "";
+        return type.trim().toUpperCase(Locale.ROOT);
+    }
+
+    private static String clipPayload(String payload) {
+        if (payload == null) return "n/a";
+        String flat = payload.replace("\n", " ").replace("\r", " ").trim();
+        if (flat.isEmpty()) return "n/a";
+        if (flat.length() <= 240) return flat;
+        return flat.substring(0, 240) + "...";
+    }
+
+    private String readTrimmedText(JsonNode node, String fieldName) {
+        if (node == null || fieldName == null) return null;
+        JsonNode value = node.get(fieldName);
+        if (value == null || value.isNull()) return null;
+        if (!value.isTextual() && !value.isNumber() && !value.isBoolean()) return null;
+
+        String text = value.asText();
+        if (text == null) return null;
+
+        String trimmed = text.trim();
+        return trimmed.isEmpty() ? null : trimmed;
+    }
 
     private Player findOnlineByXuid(String xuid) {
         if (xuid == null) return null;
@@ -640,6 +883,31 @@ public final class BanBridgePlugin extends PluginBase implements Listener {
             if (xuid.equals(px)) return p;
         }
         return null;
+    }
+
+    private void kickPlayer(Player player, String reason) {
+        if (player == null) return;
+        String finalReason = (reason == null || reason.trim().isEmpty())
+                ? "You were kicked by the backend."
+                : reason.trim();
+        player.kick(finalReason, false);
+    }
+
+    private void sendMessageToPlayer(Player player, String message) {
+        if (player == null || message == null || message.trim().isEmpty()) return;
+        player.sendMessage(message);
+    }
+
+    private int broadcastToAllPlayers(String message) {
+        if (message == null || message.trim().isEmpty()) return 0;
+
+        int count = 0;
+        for (Player player : getServer().getOnlinePlayers().values()) {
+            if (player == null) continue;
+            player.sendMessage(message);
+            count++;
+        }
+        return count;
     }
 
     private String safeXuid(Player player) {
@@ -732,10 +1000,6 @@ public final class BanBridgePlugin extends PluginBase implements Listener {
         return null;
     }
 
-    // ----------------------------
-    // Colored logger helpers
-    // ----------------------------
-
     private void logInfo(String area, String msg) {
         getLogger().info(PREFIX + INFO + "[" + ACCENT + area + INFO + "] " + INFO + msg);
     }
@@ -751,10 +1015,6 @@ public final class BanBridgePlugin extends PluginBase implements Listener {
     private void logErr(String area, String msg) {
         getLogger().warning(PREFIX + ERR + "[" + ACCENT + area + ERR + "] " + ERR + msg);
     }
-
-    // ----------------------------
-    // Optional: local ban reporting hook (kept for future)
-    // ----------------------------
 
     @SuppressWarnings("unused")
     private void reportLocalBanEnforced(Player target, String reason, Long durationSeconds) {
@@ -779,5 +1039,19 @@ public final class BanBridgePlugin extends PluginBase implements Listener {
         backendClient.reportBanEnforcedAsync(req, ok -> {
             if (!ok) logWarn("BanReport", "Failed to report enforced ban to backend.");
         });
+    }
+
+    private record CommandExecutionOutcome(
+            boolean acknowledge,
+            boolean shutdownAfterAck,
+            String logMessage
+    ) {
+        private static CommandExecutionOutcome ack(String logMessage) {
+            return new CommandExecutionOutcome(true, false, logMessage);
+        }
+
+        private static CommandExecutionOutcome ackShutdown(String logMessage) {
+            return new CommandExecutionOutcome(true, true, logMessage);
+        }
     }
 }

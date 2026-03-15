@@ -19,6 +19,7 @@ org\banbridge\bans\BanCache$CacheFile.class
 org\banbridge\stats\OshiBandwidthMeter.class
 org\banbridge\stats\LinuxBandwidthMeter.class
 org\banbridge\api\BanReportRequest$BanPayload.class
+org\banbridge\BanBridgePlugin$CommandExecutionOutcome.class
 org\banbridge\bans\BanEntry.class
 org\banbridge\api\CommandsPollResponse.class
 org\banbridge\api\PresenceRequest$PlayerPresence.class

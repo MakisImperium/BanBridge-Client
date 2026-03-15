@@ -170,7 +170,15 @@ public final class BackendClient {
                     .build();
 
             sendWithRetry(req, op)
-                    .thenApply(resp -> resp.statusCode() / 100 == 2)
+                    .thenApply(resp -> {
+                        int sc = resp.statusCode();
+                        if (sc / 100 != 2) {
+                            System.out.println("[BanBridge] op=" + op + " HTTP " + sc + " url=" + url
+                                    + " body=" + clip(resp.body(), 240));
+                            return false;
+                        }
+                        return true;
+                    })
                     .exceptionally(ex -> {
                         logFail(op, url, ex);
                         return false;
@@ -194,7 +202,14 @@ public final class BackendClient {
                     .build();
 
             sendWithRetry(req, op)
-                    .thenApply(resp -> new PostResult(resp.statusCode() / 100 == 2, resp.statusCode()))
+                    .thenApply(resp -> {
+                        int sc = resp.statusCode();
+                        if (sc / 100 != 2) {
+                            System.out.println("[BanBridge] op=" + op + " HTTP " + sc + " url=" + url
+                                    + " body=" + clip(resp.body(), 240));
+                        }
+                        return new PostResult(sc / 100 == 2, sc);
+                    })
                     .exceptionally(ex -> {
                         logFail(op, url, ex);
                         return new PostResult(false, null);
@@ -235,13 +250,11 @@ public final class BackendClient {
                     if (err == null) {
                         int sc = resp.statusCode();
 
-                        // DO NOT retry auth errors; log once
                         if (sc == 401 || sc == 403) {
                             System.out.println("[BanBridge] op=" + op + " HTTP " + sc + " (auth failed?) url=" + req.uri());
                             return CompletableFuture.completedFuture(resp);
                         }
 
-                        // Retry on 5xx + 429
                         if (((sc >= 500 && sc <= 599) || sc == 429) && attempt < maxAttempts) {
                             long delay = computeDelayMillis(attempt, sc == 429);
                             return delayFuture(delay).thenCompose(v -> sendWithRetry0(req, op, attempt + 1));
@@ -300,13 +313,17 @@ public final class BackendClient {
     // ----------------------------
 
     private HttpRequest.Builder baseRequest(String url) {
-        // Contract requires:
-        //   Authorization: Bearer <SERVER_API_TOKEN>
-        return HttpRequest.newBuilder()
+        HttpRequest.Builder builder = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .timeout(Duration.ofSeconds(15))
                 .header("Authorization", "Bearer " + serverToken)
                 .header("Accept", "application/json");
+
+        if (!serverKey.isEmpty()) {
+            builder.header("X-Server-Key", serverKey);
+        }
+
+        return builder;
     }
 
     private static String trimTrailingSlash(String s) {

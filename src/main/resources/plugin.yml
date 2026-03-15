@@ -1,6 +1,6 @@
 name: BanBridge
 main: org.banbridge.BanBridgePlugin
-version: 1.0.0
+version: 1.0.1
 api: ["1.0.0"]
-author: you
+author: MakisImperium
 description: Server-wide bans + stats bridge to REST backend
